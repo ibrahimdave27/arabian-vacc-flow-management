@@ -1,4 +1,3 @@
-require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder, WebhookClient } = require('discord.js');
 const cron = require('node-cron');
 const axios = require('axios');
@@ -18,6 +17,7 @@ const CONFIG = {
   UAE_AIRPORTS: [
     'OMAA', // Abu Dhabi International
     'OMAL', // Al Ain International
+    'OMAE', // Al Ain En-route (CTR)
     'OMAD', // Al Bateen Executive
     'OMDW', // Al Maktoum International
     'OMDM', // Al Minhad Air Base (civil ops)
@@ -154,15 +154,31 @@ async function pollVatsim() {
  */
 async function fetchControllerHours(cid) {
   try {
-    const url = `https://api.vatsim.net/v2/members/${cid}/stats`;
+    // Try VATSIM API v2 first
+    const url = `https://api.vatsim.net/v2/members/${cid}`;
     const { data } = await axios.get(url, { timeout: 8000 });
-    // atc_time is returned in minutes
-    const totalMinutes = data?.atc?.atc_time ?? null;
-    if (totalMinutes === null) return null;
-    const hours = Math.floor(totalMinutes / 60);
-    const mins  = totalMinutes % 60;
-    return `${hours}h ${String(mins).padStart(2, '0')}m`;
-  } catch {
+    // Hours are under reg_date/hours depending on API version — try both paths
+    const totalMinutes =
+      data?.vatsim?.atc?.atctime ??
+      data?.atc?.atc_time ??
+      data?.statistics?.atc_time ??
+      null;
+    if (totalMinutes !== null) {
+      const hours = Math.floor(totalMinutes / 60);
+      const mins  = totalMinutes % 60;
+      return `${hours}h ${String(mins).padStart(2, '0')}m`;
+    }
+    // Fallback: try stats endpoint
+    const statsRes = await axios.get(`https://api.vatsim.net/v2/members/${cid}/stats`, { timeout: 8000 });
+    const mins2 = statsRes.data?.atc?.atc_time ?? statsRes.data?.atctime ?? null;
+    if (mins2 !== null) {
+      const hours = Math.floor(mins2 / 60);
+      const mins  = mins2 % 60;
+      return `${hours}h ${String(mins).padStart(2, '0')}m`;
+    }
+    return null;
+  } catch (err) {
+    console.error(`fetchControllerHours error for CID ${cid}:`, err.message);
     return null;
   }
 }
@@ -172,7 +188,7 @@ async function fetchControllerHours(cid) {
 // ─────────────────────────────────────────────
 
 // Arabian vACC logo URL — used as thumbnail in all embeds
-const VACC_LOGO = 'https://discord.com/channels/1267353959631163464/1267353959631163467/1513504634554159284';
+const VACC_LOGO = 'https://cdn.vatsim.net/region-web-media/EMEA/vACCs/Arabian/logos/arabian-vacc-logo.png';
 
 function buildOnlineEmbed(controller, totalHours) {
   const icao      = extractICAO(controller.callsign);
@@ -186,8 +202,6 @@ function buildOnlineEmbed(controller, totalHours) {
     `**Callsign:** ${controller.callsign}`,
     `**Frequency:** ${controller.frequency}`,
     `${controller.name} ${controller.cid} (${rating}) is online at ${utcTime}`,
-    `**End Time:** —`,
-    `**Session Duration:** —`,
     `**Total ATC Hours:** ${totalHours ?? 'Unavailable'}`,
   ].join('\n');
 
