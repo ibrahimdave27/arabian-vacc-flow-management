@@ -1,0 +1,19 @@
+{
+  "name": "arabian-vacc-bot",
+  "version": "1.0.0",
+  "description": "Arabian vACC Discord bot — ATC notifications & daily traffic stats",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "discord.js": "^14.0.0",
+    "dotenv": "^17.4.2",
+    "node-cron": "^3.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  }
+}
