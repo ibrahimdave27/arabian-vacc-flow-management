@@ -13,11 +13,7 @@ const CONFIG = {
   DISCORD_TOKEN:          process.env.DISCORD_TOKEN,
   CLIENT_ID:              process.env.CLIENT_ID,
   GUILD_ID:               process.env.GUILD_ID,
-  ATC_ONLINE_CHANNEL_ID:  process.env.ATC_ONLINE_CHANNEL_ID,
-  DAILY_STATS_CHANNEL_ID: process.env.DAILY_STATS_CHANNEL_ID,
-  TRAFFIC_CHANNEL_ID:     process.env.TRAFFIC_CHANNEL_ID,
 
-  TRAFFIC_THRESHOLD: 5,       // alert when combined traffic >= this
   POLL_INTERVAL_MS:  15000,   // VATSIM poll every 15s
   TRAFFIC_CHECK_CRON: '*/5 * * * *',
   VATSIM_DATA_URL: 'https://data.vatsim.net/v3/vatsim-data.json',
@@ -92,6 +88,9 @@ const COLOR_STATS   = 0xf5a623;
 const onlineControllers = new Map();   // callsign → controller object
 const pausedAirports    = new Map();   // icao → timestamp paused until
 const alertedAirports   = new Set();   // icao codes already alerted this cycle
+
+const DEFAULT_THRESHOLD = 5;
+const airportThresholds = new Map();
 
 // Daily stats cron job — replaceable via /setstatstime command
 let dailyStatsCron = null;
@@ -304,12 +303,16 @@ async function checkTrafficAlerts() {
       }).length;
 
       const combined = deps + pres + arrs;
-      if (combined < CONFIG.TRAFFIC_THRESHOLD) {
-        alertedAirports.delete(icao); // reset so it can alert again if traffic builds back up
-        continue;
-      }
 
-      if (alertedAirports.has(icao)) continue; // already alerted this cycle
+    // get airport-specific threshold or fallback
+    const threshold = airportThresholds.get(icao) ?? DEFAULT_THRESHOLD;
+
+    if (combined < threshold) {
+      alertedAirports.delete(icao);
+      continue;
+    }
+
+    if (alertedAirports.has(icao)) continue;
 
       // Controllers online at this airport
       const controllersOnline = [...onlineControllers.keys()].filter(cs =>
@@ -335,14 +338,36 @@ async function checkTrafficAlerts() {
 
 async function fetchAirportStats(icao) {
   try {
-    const { data } = await axios.get(`https://statsim.net/api/airport/${icao}/daily`, { timeout: 8000 });
-    if (Array.isArray(data) && data.length > 0) {
-      const today = data[data.length - 1];
-      return { departures: today.departures ?? 0, arrivals: today.arrivals ?? 0 };
-    }
-    return { departures: 0, arrivals: 0 };
-  } catch {
-    return null;
+    const { data } = await axios.get(
+      CONFIG.VATSIM_DATA_URL,
+      { timeout: 10000 }
+    );
+
+    const pilots = data.pilots || [];
+
+    // Departures (filed from this airport)
+    const departures = pilots.filter(p =>
+  p.flight_plan?.departure === icao &&
+  (p.groundspeed ?? 0) > 0
+).length;
+
+    // Arrivals (flying to this airport)
+    const arrivals = pilots.filter(p =>
+      p.flight_plan?.arrival === icao
+    ).length;
+
+    return {
+      departures,
+      arrivals
+    };
+
+  } catch (err) {
+    console.error(`VATSIM STATS FAILED FOR ${icao}`, err.message);
+
+    return {
+      departures: 0,
+      arrivals: 0
+    };
   }
 }
 
@@ -351,7 +376,9 @@ async function buildCountryStatsEmbed(countryName, flag, airports) {
   let totalDep = 0, totalArr = 0;
 
   for (const icao of airports) {
+    console.log(`Calling fetchAirportStats for ${icao}`);
     const stats = await fetchAirportStats(icao);
+    console.log(`Returned from fetchAirportStats for ${icao}`, stats);
     if (!stats) continue;
     if (stats.departures === 0 && stats.arrivals === 0) continue;
     const name = AIRPORT_NAMES[icao] || icao;
@@ -360,14 +387,16 @@ async function buildCountryStatsEmbed(countryName, flag, airports) {
     totalArr += stats.arrivals;
   }
 
-  if (lines.length === 0) return null;
+  console.log(
+  	`${countryName}: ${lines.length} airports returned traffic`
+  );
 
   const embed = new EmbedBuilder()
     .setTitle(`${flag}  Daily Stats – ${countryName}`)
     .setDescription(`✈️  **Flight Stats**\n\n${lines.join('\n\n')}`)
     .addFields({ name: 'Totals', value: `Departures: **${totalDep}** · Arrivals: **${totalArr}**` })
     .setColor(COLOR_STATS)
-    .setFooter({ text: 'Brought to you by the Arabian vACC • Stats courtesy of statsim.net' })
+    .setFooter({ text: 'Arabian vACC • Live data from VATSIM network' })
     .setTimestamp();
 
   if (VACC_LOGO) embed.setThumbnail(VACC_LOGO);
@@ -377,7 +406,14 @@ async function buildCountryStatsEmbed(countryName, flag, airports) {
 async function sendDailyStats() {
   console.log('📊 Sending daily stats...');
   try {
-    const channel = await client.channels.fetch(CONFIG.DAILY_STATS_CHANNEL_ID);
+    const channel = await client.channels.fetch(
+  		CONFIG.DAILY_STATS_CHANNEL_ID
+	);
+
+	if (!channel) {
+  		console.error('❌ Stats channel not found');
+  		return;
+	}
     const regions = [
       { name: 'UAE',   flag: '🇦🇪', airports: CONFIG.UAE_AIRPORTS   },
       { name: 'Qatar', flag: '🇶🇦', airports: CONFIG.QATAR_AIRPORTS },
@@ -410,6 +446,28 @@ function scheduleDailyStats(hour, minute) {
 // ─────────────────────────────────────────────
 
 const commands = [
+  new SlashCommandBuilder()
+      .setName('setairportthreshold')
+      .setDescription('Set traffic alert threshold for a specific airport')
+      .addStringOption(opt =>
+        opt.setName('icao')
+          .setDescription('Airport ICAO (e.g. OMDB)')
+          .setRequired(true)
+      )
+      .addIntegerOption(opt =>
+        opt.setName('amount')
+          .setDescription('Minimum combined traffic to trigger alert')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(50)
+      )
+      .toJSON(),  
+    
+  new SlashCommandBuilder()
+      .setName('thresholdstatus')
+      .setDescription('Show current traffic thresholds per airport')
+      .toJSON(),
+    
   new SlashCommandBuilder()
     .setName('pausealerts')
     .setDescription('Pause traffic alerts for an airport for a set number of hours')
@@ -499,6 +557,50 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: `ℹ️ **${icao}** was not paused.`, ephemeral: true });
     }
   }
+   
+  else if (commandName === 'thresholdstatus') {
+      if (airportThresholds.size === 0) {
+        return interaction.reply({
+          content: `ℹ️ All airports are using default threshold: **${DEFAULT_THRESHOLD}**`,
+          ephemeral: true
+        });
+      }
+
+      const lines = [];
+
+      for (const [icao, val] of airportThresholds) {
+        lines.push(`• **${icao}** → ${val}`);
+      }
+
+      await interaction.reply({
+        content:
+          `🚦 **Airport Thresholds**\n\n` +
+          lines.join('\n') +
+          `\n\nDefault: **${DEFAULT_THRESHOLD}**`,
+        ephemeral: true
+      });
+    }  
+    
+  else if (commandName === 'setairportthreshold') {
+  const icao = interaction.options.getString('icao').toUpperCase();
+  const amount = interaction.options.getInteger('amount');
+
+  if (!ALL_ARABIAN_AIRPORTS.includes(icao)) {
+    return interaction.reply({
+      content: `❌ ${icao} is not a monitored Arabian vACC airport.`,
+      ephemeral: true
+    });
+  }
+
+  airportThresholds.set(icao, amount);
+
+  await interaction.reply({
+    content: `🚦 ${icao} traffic alert threshold set to **${amount} aircraft**.`,
+    ephemeral: true
+  });
+
+  console.log(`🚦 Threshold updated: ${icao} = ${amount}`);
+}  
 
   else if (commandName === 'pausestatus') {
     if (pausedAirports.size === 0) {
