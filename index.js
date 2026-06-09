@@ -14,7 +14,7 @@ const CONFIG = {
   CLIENT_ID:              process.env.CLIENT_ID,
   GUILD_ID:               process.env.GUILD_ID,
 
-  POLL_INTERVAL_MS:  15000,   // VATSIM poll every 15s
+  POLL_INTERVAL_MS:  15000,
   TRAFFIC_CHECK_CRON: '*/5 * * * *',
   VATSIM_DATA_URL: 'https://data.vatsim.net/v3/vatsim-data.json',
 
@@ -74,7 +74,6 @@ const AIRPORT_COORDS = {
   OMAZ: { lat: 24.8667, lon: 53.0833 },
 };
 
-// Replace with your Discord CDN link after uploading the Arabian vACC icon
 const VACC_LOGO = process.env.VACC_LOGO_URL || '';
 
 const COLOR_ONLINE  = 0x00ff00;
@@ -85,16 +84,15 @@ const COLOR_STATS   = 0xf5a623;
 // ─────────────────────────────────────────────
 //  STATE
 // ─────────────────────────────────────────────
-const onlineControllers = new Map();   // callsign → controller object
-const pausedAirports    = new Map();   // icao → timestamp paused until
-const alertedAirports   = new Set();   // icao codes already alerted this cycle
+const onlineControllers = new Map(); 
+const pausedAirports    = new Map();  
+const alertedAirports   = new Set();  
 
 const DEFAULT_THRESHOLD = 5;
 const airportThresholds = new Map();
 
-// Daily stats cron job — replaceable via /setstatstime command
 let dailyStatsCron = null;
-let dailyStatsTime = { hour: 23, minute: 55 }; // default 23:55 UTC
+let dailyStatsTime = { hour: 23, minute: 55 }; 
 
 // ─────────────────────────────────────────────
 //  DISCORD CLIENT
@@ -285,17 +283,14 @@ async function checkTrafficAlerts() {
       const coords = AIRPORT_COORDS[icao];
       if (!coords) continue;
 
-      // Departures: pilots whose departure airport = icao and not yet airborne (groundspeed < 50)
       const deps = pilots.filter(p =>
         p.flight_plan?.departure === icao && p.groundspeed < 50
       ).length;
 
-      // Prefiles: filed flight plans departing from icao
       const pres = prefiles.filter(p =>
         p.flight_plan?.departure === icao
       ).length;
 
-      // Arrivals within 100NM
       const arrs = pilots.filter(p => {
         if (p.flight_plan?.arrival !== icao) return false;
         const dist = getDistanceNM(coords.lat, coords.lon, p.latitude, p.longitude);
@@ -304,7 +299,6 @@ async function checkTrafficAlerts() {
 
       const combined = deps + pres + arrs;
 
-    // get airport-specific threshold or fallback
     const threshold = airportThresholds.get(icao) ?? DEFAULT_THRESHOLD;
 
     if (combined < threshold) {
@@ -314,7 +308,6 @@ async function checkTrafficAlerts() {
 
     if (alertedAirports.has(icao)) continue;
 
-      // Controllers online at this airport
       const controllersOnline = [...onlineControllers.keys()].filter(cs =>
         extractICAO(cs) === icao
       );
@@ -345,13 +338,11 @@ async function fetchAirportStats(icao) {
 
     const pilots = data.pilots || [];
 
-    // Departures (filed from this airport)
     const departures = pilots.filter(p =>
   p.flight_plan?.departure === icao &&
   (p.groundspeed ?? 0) > 0
 ).length;
 
-    // Arrivals (flying to this airport)
     const arrivals = pilots.filter(p =>
       p.flight_plan?.arrival === icao
     ).length;
@@ -543,7 +534,6 @@ client.on('interactionCreate', async interaction => {
     const until = Date.now() + hours * 60 * 60 * 1000;
     pausedAirports.set(icao, until);
 
-    // Format: "Traffic alerts for OTHH paused until 2025-12-31 13:39z"
     const untilDate = new Date(until);
     const dateStr   = untilDate.toISOString().slice(0, 10);
     const timeStr   = toUtcZ(untilDate);
@@ -669,7 +659,6 @@ client.once('ready', async () => {
 
   await registerCommands();
 
-  // Pre-load currently online controllers (no spam on startup)
   try {
     const { data } = await axios.get(CONFIG.VATSIM_DATA_URL, { timeout: 10000 });
     for (const c of data.controllers || []) {
@@ -683,13 +672,10 @@ client.once('ready', async () => {
     console.error('Failed to pre-load controllers:', err.message);
   }
 
-  // Poll VATSIM every 15s
   setInterval(pollVatsim, CONFIG.POLL_INTERVAL_MS);
 
-  // Traffic alerts every 5 minutes
   cron.schedule(CONFIG.TRAFFIC_CHECK_CRON, checkTrafficAlerts, { timezone: 'UTC' });
 
-  // Daily stats at 23:55 UTC (default)
   scheduleDailyStats(23, 55);
 });
 
