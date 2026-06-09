@@ -447,6 +447,11 @@ function scheduleDailyStats(hour, minute) {
 
 const commands = [
   new SlashCommandBuilder()
+      .setName('ping')
+      .setDescription('Check if the bot is active and responsive')
+      .toJSON(),
+    
+  new SlashCommandBuilder()
       .setName('setairportthreshold')
       .setDescription('Set traffic alert threshold for a specific airport')
       .addStringOption(opt =>
@@ -557,6 +562,21 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: `ℹ️ **${icao}** was not paused.`, ephemeral: true });
     }
   }
+    
+  else if (commandName === 'ping') {
+      const sent = await interaction.reply({
+        content: '🏓 Pinging...',
+        fetchReply: true
+      });
+
+      const latency = sent.createdTimestamp - interaction.createdTimestamp;
+
+      await interaction.editReply(
+        `🏓 Pong!\n` +
+        `⏱️ Latency: **${latency}ms**\n` +
+        `🤖 API Latency: **${client.ws.ping}ms**`
+      );
+    }
    
   else if (commandName === 'thresholdstatus') {
       if (airportThresholds.size === 0) {
