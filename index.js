@@ -5,6 +5,12 @@ const {
 } = require('discord.js');
 const cron  = require('node-cron');
 const axios = require('axios');
+const statsim = axios.create({
+  baseURL: 'https://api.statsim.net',
+  headers: {
+    'X-API-Key': process.env.STATSIM_API_KEY
+  }
+});
 
 // ─────────────────────────────────────────────
 //  CONFIG
@@ -13,8 +19,11 @@ const CONFIG = {
   DISCORD_TOKEN:          process.env.DISCORD_TOKEN,
   CLIENT_ID:              process.env.CLIENT_ID,
   GUILD_ID:               process.env.GUILD_ID,
+  ATC_ONLINE_CHANNEL_ID:               process.env.ATC_ONLINE_CHANNEL_ID,
+  TRAFFIC_CHANNEL_ID:               process.env.TRAFFIC_CHANNEL_ID,
+  DAILY_STATS_CHANNEL_ID:               process.env.DAILY_STATS_CHANNEL_ID,  
 
-  POLL_INTERVAL_MS:  15000,
+  POLL_INTERVAL_MS:  15000, 
   TRAFFIC_CHECK_CRON: '*/5 * * * *',
   VATSIM_DATA_URL: 'https://data.vatsim.net/v3/vatsim-data.json',
 
@@ -84,8 +93,8 @@ const COLOR_STATS   = 0xf5a623;
 // ─────────────────────────────────────────────
 //  STATE
 // ─────────────────────────────────────────────
-const onlineControllers = new Map(); 
-const pausedAirports    = new Map();  
+const onlineControllers = new Map();  
+const pausedAirports    = new Map();   
 const alertedAirports   = new Set();  
 
 const DEFAULT_THRESHOLD = 5;
@@ -329,36 +338,65 @@ async function checkTrafficAlerts() {
 //  DAILY STATS
 // ─────────────────────────────────────────────
 
-async function fetchAirportStats(icao) {
-  try {
-    const { data } = await axios.get(
-      CONFIG.VATSIM_DATA_URL,
-      { timeout: 10000 }
-    );
+    async function fetchAirportStats(icao) {
+      try {
+        console.log(`Fetching Statsim stats for ${icao}`);
 
-    const pilots = data.pilots || [];
+        const now = new Date();
 
-    const departures = pilots.filter(p =>
-  p.flight_plan?.departure === icao &&
-  (p.groundspeed ?? 0) > 0
-).length;
+        const from = new Date(now);
+        from.setUTCHours(0, 0, 0, 0);
 
-    const arrivals = pilots.filter(p =>
-      p.flight_plan?.arrival === icao
+        const to = new Date(now);
+        to.setUTCHours(23, 59, 59, 999);
+
+        const { data } = await statsim.get('/api/Flights/Icao', {
+          params: {
+            icao,
+            from: from.toISOString(),
+            to: to.toISOString()
+          },
+          timeout: 15000
+        });
+
+        console.log(
+          `${icao} FIRST FLIGHT:`,
+          JSON.stringify(data[0], null, 2)
+        );
+
+    const flights = Array.isArray(data)
+      ? data
+      : (data.items || data.flights || []);
+
+    const departures = data.filter(
+      flight => flight.departure === icao
     ).length;
+
+    const arrivals = data.filter(
+      flight => flight.destination === icao
+    ).length;
+
+    console.log(
+      `${icao}: ${departures} departures, ${arrivals} arrivals`
+    );
 
     return {
       departures,
       arrivals
     };
 
-  } catch (err) {
-    console.error(`VATSIM STATS FAILED FOR ${icao}`, err.message);
-
     return {
-      departures: 0,
-      arrivals: 0
+      departures,
+      arrivals
     };
+  } catch (err) {
+    console.error(
+      `Statsim failed for ${icao}:`,
+      err.response?.status,
+      err.response?.data || err.message
+    );
+
+    return null;
   }
 }
 
@@ -387,7 +425,7 @@ async function buildCountryStatsEmbed(countryName, flag, airports) {
     .setDescription(`✈️  **Flight Stats**\n\n${lines.join('\n\n')}`)
     .addFields({ name: 'Totals', value: `Departures: **${totalDep}** · Arrivals: **${totalArr}**` })
     .setColor(COLOR_STATS)
-    .setFooter({ text: 'Arabian vACC • Live data from VATSIM network' })
+    .setFooter({ text: 'Arabian vACC • Stats courtesy of statsim.net' })
     .setTimestamp();
 
   if (VACC_LOGO) embed.setThumbnail(VACC_LOGO);
